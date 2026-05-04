@@ -2,69 +2,87 @@ import cv2
 import easyocr
 import os
 import numpy as np
-from openai import OpenAI
-from PIL import Image, ImageDraw, ImageFont # Para escribir bonito
-
-# Configura tu API Key real aquí
-client = OpenAI(api_key="TU_KEY_AQUI")
+from deep_translator import GoogleTranslator
+from PIL import Image, ImageDraw, ImageFont
 
 def traducir_con_ia(texto):
+    if not texto or not str(texto).strip(): 
+        return "" # Retorna string vacío si no hay texto
+    
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Eres un traductor experto de manga. Traduce a español neutro de forma concisa para que quepa en un globo de texto."},
-                {"role": "user", "content": f"Traduce: {texto}"}
-            ]
-        )
-        return response.choices[0].message.content
-    except:
-        return texto # Si falla la API, devuelve el texto original
+        traduccion = GoogleTranslator(source='auto', target='es').translate(texto)
+        return traduccion if traduccion is not None else texto
+    except Exception as e:
+        print(f"⚠️ Error en Traducción: {e}")
+        return str(texto) # Si falla, devuelve al menos el texto original
 
-if not os.path.exists('test.jpg'):
-    print("❌ No encuentro 'test.jpg'")
+print("🚀 Cargando modelos de IA con optimización...")
+# Al cargar el modelo, EasyOCR ya sabe que debe buscar caracteres complejos
+reader = easyocr.Reader(['ja', 'en'], gpu=False) # Pon True si tienes NVIDIA CUDA
+
+# --- CONFIGURACIÓN DE RUTAS ---
+carpeta_entrada = 'entrada'
+carpeta_salida = 'salida'
+
+# Crear carpeta de salida si no existe
+if not os.path.exists(carpeta_salida):
+    os.makedirs(carpeta_salida)
+    print(f"✅ Carpeta '{carpeta_salida}' creada.")
+
+# Inicializar EasyOCR fuera del bucle (para que cargue solo una vez y sea más rápido)
+print("🚀 Cargando modelos de IA...")
+reader = easyocr.Reader(['ja', 'en'])
+
+# Obtener lista de archivos y ordenarlos (001, 002...)
+archivos = sorted([f for f in os.listdir(carpeta_entrada) if f.endswith(('.webp', '.jpg', '.png'))])
+
+if not archivos:
+    print(f"❌ No hay imágenes en la carpeta '{carpeta_entrada}'")
 else:
-    print("✅ Iniciando IA...")
-    reader = easyocr.Reader(['es', 'en'])
-    image = cv2.imread('test.jpg')
-    image_limpia = image.copy()
+    print(f"📂 Encontradas {len(archivos)} imágenes. Iniciando proceso...")
 
-    results = reader.readtext(image)
+    for nombre_archivo in archivos:
+        path_entrada = os.path.join(carpeta_entrada, nombre_archivo)
+        path_salida = os.path.join(carpeta_salida, nombre_archivo)
+        
+        print(f"\n🖼️ Procesando: {nombre_archivo}")
+        
+        # 1. Leer imagen
+        image = cv2.imread(path_entrada)
+        if image is None: continue
+        image_limpia = image.copy()
+        
+        # 2. Pre-procesamiento
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        processed_img = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+        
+        # 3. OCR (He quitado paragraph=True para evitar el error de desempaquetado anterior)
+        results = reader.readtext(processed_img)
 
-    # Convertimos la imagen de OpenCV (BGR) a formato PIL (RGB) para escribir
-    pil_img = Image.fromarray(cv2.cvtColor(image_limpia, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(pil_img)
-    
-    # Intentamos cargar una fuente estándar (puedes descargar una fuente de manga .ttf)
-    try:
-        font = ImageFont.truetype("arial.ttf", 18)
-    except:
-        font = ImageFont.load_default()
+        # 4. Dibujo con PIL
+        pil_img = Image.fromarray(cv2.cvtColor(image_limpia, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil_img)
+        
+        try:
+            font = ImageFont.truetype("arial.ttf", 20)
+        except:
+            font = ImageFont.load_default()
 
-    for (bbox, text, prob) in results:
-        if prob > 0.20:
-            # 1. TRADUCIR (Llamamos a la función ahora sí)
-            print(f"📝 Original: {text}")
-            texto_es = traducir_con_ia(text)
-            print(f"🌍 Traducido: {texto_es}")
+        # 5. Traducir y limpiar globos
+        for (bbox, text, prob) in results:
+            if prob > 0.20:  # Ajusta este umbral según necesites
+                texto_es = traducir_con_ia(text)
+                
+                top_left = tuple(map(int, bbox[0]))
+                bottom_right = tuple(map(int, bbox[2]))
 
-            # 2. COORDENADAS
-            top_left = tuple(map(int, bbox[0]))
-            bottom_right = tuple(map(int, bbox[2]))
+                # Dibujar rectángulo blanco y texto
+                draw.rectangle([top_left, bottom_right], fill=(255, 255, 255))
+                draw.text(top_left, texto_es, font=font, fill=(0, 0, 0))
 
-            # 3. LIMPIAR EL GLOBO (Pintar rectángulo blanco en PIL)
-            draw.rectangle([top_left, bottom_right], fill=(255, 255, 255))
+        # 6. Guardar resultado
+        final_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        cv2.imwrite(path_salida, final_img)
+        print(f"💾 Guardado en: {path_salida}")
 
-            # 4. ESCRIBIR TEXTO NUEVO
-            # Lo ponemos en color negro (0,0,0)
-            draw.text(top_left, texto_es, font=font, fill=(0, 0, 0))
-
-    # Convertimos de vuelta a OpenCV para mostrar/guardar
-    final_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-
-    cv2.imwrite('resultado_final.jpg', final_img)
-    print("💾 ¡Proyecto terminado! Mira 'resultado_final.jpg'")
-    
-    cv2.imshow('Manga Traducido', final_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    print("\n✨ ¡Proceso completado! Todas las imágenes están en la carpeta 'salida'.")
